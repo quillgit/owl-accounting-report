@@ -1,0 +1,23 @@
+services:
+  server:
+    build: ./server
+    restart: always
+    ports:
+      - "${PORT:-3001}:${PORT:-3001}"
+    environment:
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - DB_NAME=${DB_NAME}
+      - PORT=${PORT:-3001}
+
+  client:
+    build:
+      context: ./client
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-http://localhost:3001}
+    restart: always
+    ports:
+      - "80:80"
+    depends_on:
+      - server
