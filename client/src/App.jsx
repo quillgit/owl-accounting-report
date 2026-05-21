@@ -11,17 +11,66 @@ import ErrorBoundary from './components/ErrorBoundary';
 // Configure Axios defaults
 axios.defaults.baseURL = import.meta.env.VITE_API_BASE_URL;
 
+// Decode JWT to check expiry
+const decodeToken = (token) => {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(window.atob(base64).split('').map(c => {
+      return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+    }).join(''));
+    return JSON.parse(jsonPayload);
+  } catch (e) {
+    return null;
+  }
+};
+
+// Check if token is expired
+const isTokenExpired = (token) => {
+  const decoded = decodeToken(token);
+  if (!decoded || !decoded.exp) return true;
+  const expiryTime = decoded.exp * 1000;
+  return Date.now() > expiryTime;
+};
+
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token'));
   const [user, setUser] = useState(JSON.parse(localStorage.getItem('user') || 'null'));
   const [view, setView] = useState('dashboard'); // dashboard | ledger | trial-balance
 
+  // Clear auth state
+  const clearAuth = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    setToken(null);
+    setUser(null);
+    delete axios.defaults.headers.common['Authorization'];
+    setView('dashboard');
+  };
+
+  // Setup axios interceptor for auth errors
   useEffect(() => {
-    // Check if token exists
+    const interceptor = axios.interceptors.response.use(
+      response => response,
+      error => {
+        if (error.response?.status === 401 || error.response?.status === 403) {
+          clearAuth();
+        }
+        return Promise.reject(error);
+      }
+    );
+    return () => axios.interceptors.response.eject(interceptor);
+  }, []);
+
+  useEffect(() => {
     const storedToken = localStorage.getItem('token');
     if (storedToken) {
-      setToken(storedToken);
-      axios.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
+      if (isTokenExpired(storedToken)) {
+        clearAuth();
+      } else {
+        setToken(storedToken);
+        axios.defaults.headers.common['Authorization'] = `Bearer ${storedToken}`;
+      }
     }
   }, []);
 
@@ -34,12 +83,7 @@ function App() {
   };
 
   const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    setToken(null);
-    setUser(null);
-    delete axios.defaults.headers.common['Authorization'];
-    setView('dashboard');
+    clearAuth();
   };
 
   const getPageTitle = () => {

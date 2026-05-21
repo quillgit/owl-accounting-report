@@ -1,6 +1,8 @@
 const { Op } = require('sequelize');
 const db = require('../models');
 const sequelize = require('../config/sequelize');
+const ExcelJS = require('exceljs');
+const mysqlPool = require('../db');
 
 // Helper to format date
 const formatDate = (date) => {
@@ -512,5 +514,254 @@ exports.getTrialBalance = async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: err.message });
+    }
+};
+
+exports.exportLedger = async (req, res) => {
+    try {
+        const { pt, regional, gudang, tgl1, tgl2, akundari, akunsampai } = req.query;
+
+        if (!tgl1 || !tgl2) {
+            return res.status(400).json({ error: "Begin date and end date are required (DD-MM-YYYY)" });
+        }
+
+        // Convert DD-MM-YYYY to YYYY-MM-DD
+        const parseDate = (d) => {
+            const [day, month, year] = d.split('-');
+            return `${year}-${month}-${day}`;
+        };
+        const d1 = parseDate(tgl1);
+        const d2 = parseDate(tgl2);
+
+        // 1. Resolve Org Filters (small query, OK to use Sequelize)
+        let orgCodes = [];
+        let orgFilter = '';
+        if (gudang) {
+            orgCodes = [gudang];
+            orgFilter = `AND jd.kodeorg = '${gudang}'`;
+        } else if (regional) {
+            const rows = await db.Organisasi.findAll({
+                attributes: ['kodeorganisasi'],
+                where: { regional }
+            });
+            orgCodes = rows.map(r => r.kodeorganisasi);
+            if (orgCodes.length > 0) {
+                orgFilter = `AND jd.kodeorg IN (${orgCodes.map(c => `'${c}'`).join(',')})`;
+            }
+        } else if (pt) {
+            const rows = await db.Organisasi.findAll({
+                attributes: ['kodeorganisasi'],
+                where: { induk: pt }
+            });
+            orgCodes = rows.map(r => r.kodeorganisasi);
+            if (orgCodes.length > 0) {
+                orgFilter = `AND jd.kodeorg IN (${orgCodes.map(c => `'${c}'`).join(',')})`;
+            }
+        }
+
+        // Account filter
+        let accountFilter = '';
+        if (akundari && akunsampai) {
+            accountFilter = `AND jd.noakun BETWEEN '${akundari}' AND '${akunsampai}'`;
+        } else if (akundari) {
+            accountFilter = `AND jd.noakun >= '${akundari}'`;
+        } else if (akunsampai) {
+            accountFilter = `AND jd.noakun <= '${akunsampai}'`;
+        }
+
+        // 2. Calculate Opening Balance (small query)
+        const period = d1.substring(0, 4) + d1.substring(5, 7);
+        const startOfMonth = `${d1.substring(0, 7)}-01`;
+
+        let saldoAwalOrgFilter = '';
+        if (orgCodes.length > 0) {
+            saldoAwalOrgFilter = `AND kodeorg IN (${orgCodes.map(c => `'${c}'`).join(',')})`;
+        }
+        let saldoAwalAccountFilter = '';
+        if (akundari && akunsampai) {
+            saldoAwalAccountFilter = `AND noakun BETWEEN '${akundari}' AND '${akunsampai}'`;
+        } else if (akundari) {
+            saldoAwalAccountFilter = `AND noakun >= '${akundari}'`;
+        } else if (akunsampai) {
+            saldoAwalAccountFilter = `AND noakun <= '${akunsampai}'`;
+        }
+
+        const [saldoAwalRows] = await mysqlPool.query(`
+            SELECT noakun, SUM(awal) as awal
+            FROM keu_saldobulanan_vw
+            WHERE periode = ? ${saldoAwalOrgFilter} ${saldoAwalAccountFilter}
+            GROUP BY noakun
+        `, [period]);
+
+        const saldoAwalMap = {};
+        saldoAwalRows.forEach(r => {
+            saldoAwalMap[r.noakun] = Number(r.awal || 0);
+        });
+
+        // 3. Add interim transactions if needed
+        if (d1 > startOfMonth) {
+            const [interimRows] = await mysqlPool.query(`
+                SELECT noakun, SUM(jumlah) as interim
+                FROM keu_jurnaldt jd
+                WHERE jd.tanggal >= ? AND jd.tanggal < ? ${orgFilter} ${accountFilter}
+                GROUP BY noakun
+            `, [startOfMonth, d1]);
+
+            interimRows.forEach(r => {
+                if (!saldoAwalMap[r.noakun]) saldoAwalMap[r.noakun] = 0;
+                saldoAwalMap[r.noakun] += Number(r.interim || 0);
+            });
+        }
+
+        // 4. Get account names
+        const [accountRows] = await mysqlPool.query(`
+            SELECT DISTINCT jd.noakun, a.namaakun
+            FROM keu_jurnaldt jd
+            LEFT JOIN keu_5akun a ON a.noakun = jd.noakun
+            WHERE jd.tanggal BETWEEN ? AND ? ${orgFilter} ${accountFilter}
+        `, [d1, d2]);
+
+        const accountNameMap = {};
+        accountRows.forEach(r => {
+            accountNameMap[r.noakun] = r.namaakun || '';
+        });
+
+        // 5. Set up Excel stream
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="General_Ledger_${tgl1}_${tgl2}.xlsx"`);
+
+        const workbook = new ExcelJS.stream.xlsx.WorkbookWriter({ stream: res });
+        const worksheet = workbook.addWorksheet('General Ledger');
+
+        worksheet.columns = [
+            { header: 'No', key: 'no', width: 8 },
+            { header: 'No Jurnal', key: 'nojurnal', width: 20 },
+            { header: 'Tanggal', key: 'tanggal', width: 12 },
+            { header: 'No Akun', key: 'noakun', width: 15 },
+            { header: 'Nama Akun', key: 'namaakun', width: 30 },
+            { header: 'No Arus Kas', key: 'noaruskas', width: 15 },
+            { header: 'Nama Karyawan', key: 'namakaryawan', width: 25 },
+            { header: 'Kode Customer', key: 'kodecustomer', width: 15 },
+            { header: 'Nama Supplier', key: 'namasupplier', width: 30 },
+            { header: 'No Referensi', key: 'noreferensi', width: 20 },
+            { header: 'No Dok/Kontrak', key: 'nodok', width: 20 },
+            { header: 'No DO', key: 'nodo', width: 20 },
+            { header: 'No Cek/Giro', key: 'nocekgiro', width: 20 },
+            { header: 'Keterangan', key: 'keterangan', width: 40 },
+            { header: 'Debet', key: 'debet', width: 15, style: { numFmt: '#,##0.00' } },
+            { header: 'Kredit', key: 'kredit', width: 15, style: { numFmt: '#,##0.00' } },
+            { header: 'Saldo', key: 'saldo', width: 15, style: { numFmt: '#,##0.00' } },
+            { header: 'Kode Org', key: 'kodeorg', width: 12 },
+            { header: 'Kode Blok', key: 'kodeblok', width: 12 },
+            { header: 'Tahun Tanam', key: 'tahuntanam', width: 12 }
+        ];
+
+        // 6. Fetch rows in chunks and write to Excel
+        let currentAkun = null;
+        let currentSaldo = 0;
+        let globalNo = 0;
+        const CHUNK_SIZE = 10000;
+        let offset = 0;
+        let hasMore = true;
+
+        while (hasMore) {
+            const [rows] = await mysqlPool.query(`
+                SELECT jd.*, s.namasupplier, k.namakaryawan
+                FROM keu_jurnaldt jd
+                LEFT JOIN log_5supplier s ON s.supplierid = jd.kodesupplier
+                LEFT JOIN datakaryawan k ON k.nik = jd.nik
+                WHERE jd.tanggal BETWEEN ? AND ? ${orgFilter} ${accountFilter}
+                ORDER BY jd.noakun ASC, jd.tanggal ASC, jd.nojurnal ASC
+                LIMIT ? OFFSET ?
+            `, [d1, d2, CHUNK_SIZE, offset]);
+
+            if (rows.length === 0) {
+                hasMore = false;
+                break;
+            }
+
+            for (const row of rows) {
+                // New account detected - write saldo awal and saldo akhir for previous
+                if (currentAkun !== null && currentAkun !== row.noakun) {
+                    // Saldo Akhir for previous account
+                    worksheet.addRow({
+                        no: '', nojurnal: '', tanggal: '', noakun: currentAkun, namaakun: '',
+                        noaruskas: '', namakaryawan: '', kodecustomer: '', namasupplier: '',
+                        noreferensi: '', nodok: '', nodo: '', nocekgiro: '',
+                        keterangan: 'Saldo Akhir', debet: 0, kredit: 0, saldo: currentSaldo,
+                        kodeorg: '', kodeblok: '', tahuntanam: ''
+                    });
+                    currentAkun = null;
+                }
+
+                // Start new account
+                if (currentAkun === null) {
+                    currentAkun = row.noakun;
+                    currentSaldo = saldoAwalMap[row.noakun] || 0;
+
+                    // Saldo Awal row
+                    worksheet.addRow({
+                        no: '', nojurnal: '', tanggal: '', noakun: row.noakun, namaakun: '',
+                        noaruskas: '', namakaryawan: '', kodecustomer: '', namasupplier: '',
+                        noreferensi: '', nodok: '', nodo: '', nocekgiro: '',
+                        keterangan: 'Saldo Awal', debet: 0, kredit: 0, saldo: currentSaldo,
+                        kodeorg: '', kodeblok: '', tahuntanam: ''
+                    });
+                }
+
+                // Transaction row
+                globalNo++;
+                const amt = Number(row.jumlah || 0);
+                const debet = amt >= 0 ? amt : 0;
+                const kredit = amt < 0 ? Math.abs(amt) : 0;
+                currentSaldo += amt;
+
+                worksheet.addRow({
+                    no: globalNo,
+                    nojurnal: row.nojurnal,
+                    tanggal: row.tanggal ? new Date(row.tanggal).toISOString().split('T')[0] : '',
+                    noakun: row.noakun,
+                    namaakun: accountNameMap[row.noakun] || '',
+                    noaruskas: row.noaruskas,
+                    namakaryawan: row.namakaryawan || '',
+                    kodecustomer: row.kodecustomer,
+                    namasupplier: row.namasupplier || '',
+                    noreferensi: row.noreferensi,
+                    nodok: row.nodok,
+                    nodo: row.noreferensi,
+                    nocekgiro: '',
+                    keterangan: row.keterangan,
+                    debet: debet,
+                    kredit: kredit,
+                    saldo: currentSaldo,
+                    kodeorg: row.kodeorg,
+                    kodeblok: row.kodeblok,
+                    tahuntanam: row.tahuntanam
+                });
+            }
+
+            offset += CHUNK_SIZE;
+            hasMore = rows.length === CHUNK_SIZE;
+        }
+
+        // Final saldo akhir for last account
+        if (currentAkun !== null) {
+            worksheet.addRow({
+                no: '', nojurnal: '', tanggal: '', noakun: currentAkun, namaakun: '',
+                noaruskas: '', namakaryawan: '', kodecustomer: '', namasupplier: '',
+                noreferensi: '', nodok: '', nodo: '', nocekgiro: '',
+                keterangan: 'Saldo Akhir', debet: 0, kredit: 0, saldo: currentSaldo,
+                kodeorg: '', kodeblok: '', tahuntanam: ''
+            });
+        }
+
+        await worksheet.commit();
+        await workbook.commit();
+
+    } catch (err) {
+        console.error('Export error:', err);
+        if (!res.headersSent) {
+            res.status(500).json({ error: err.message });
+        }
     }
 };

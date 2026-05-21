@@ -50,6 +50,8 @@ const DatePicker = ({ value, onChange, placeholder = "DD-MM-YYYY", className = "
       showMonthYearPicker={showMonthYearPicker}
       showMonthDropdown
       showYearDropdown
+      yearDropdownItemNumber={15}
+      scrollableYearDropdown
       dropdownMode="select"
     />
   );

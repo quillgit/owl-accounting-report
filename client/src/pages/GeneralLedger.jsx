@@ -1,13 +1,15 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import axios from 'axios';
 import * as XLSX from 'xlsx';
-import { Search, ArrowRight, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download } from 'lucide-react';
+import { Search, ArrowRight, Loader2, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, Download, AlertCircle } from 'lucide-react';
 import SearchableSelect from '../components/SearchableSelect';
 import DatePicker from '../components/DatePicker';
 
 export default function GeneralLedger({ onNavigate }) {
   const [ledgerData, setLedgerData] = useState({ rows: [], balances: [] });
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [exportStatus, setExportStatus] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage, setItemsPerPage] = useState(100);
   const [showAll, setShowAll] = useState(false);
@@ -169,62 +171,100 @@ export default function GeneralLedger({ onNavigate }) {
   const endIndex = startIndex + itemsPerPage;
   const currentTableData = showAll ? filteredTableData : filteredTableData.slice(startIndex, endIndex);
 
-  const handleExportExcel = () => {
-    if (!tableData.length) return;
+  const EXPORT_HEADERS = [
+    "No", "No Jurnal", "Tanggal", "No Akun", "Nama Akun",
+    "No Arus Kas", "Nama Karyawan", "Kode Customer", "Nama Supplier",
+    "No Referensi", "No Dok/Kontrak", "No DO", "No Cek/Giro",
+    "Keterangan", "Debet", "Kredit", "Saldo", "Kode Org",
+    "Kode Blok", "Tahun Tanam"
+  ];
 
-    const exportData = tableData.map(row => {
-      if (row.type === 'summary') {
-         return {
-            "No": '',
-            "No Jurnal": '',
-            "Tanggal": '',
-            "No Akun": row.noakun,
-            "Nama Akun": '',
-            "No Arus Kas": '',
-            "Nama Karyawan": '',
-            "Kode Customer": '',
-            "Nama Supplier": '',
-            "No Referensi": '',
-            "No Dok/Kontrak": '',
-            "No DO": '',
-            "No Cek/Giro": '',
-            "Keterangan": row.keterangan,
-            "Debet": 0,
-            "Kredit": 0,
-            "Saldo": row.saldo,
-            "Kode Org": '',
-            "Kode Blok": '',
-            "Tahun Tanam": ''
-         };
-      }
-      return {
-        "No": row.no || '',
-        "No Jurnal": row.nojurnal || '',
-        "Tanggal": row.tanggal || '',
-        "No Akun": row.noakun || '',
-        "Nama Akun": row.namaakun || '',
-        "No Arus Kas": row.noaruskas || '',
-        "Nama Karyawan": row.namakaryawan || '',
-        "Kode Customer": row.kodecustomer || '',
-        "Nama Supplier": row.namasupplier || '',
-        "No Referensi": row.noreferensi || '',
-        "No Dok/Kontrak": row.nodok || '',
-        "No DO": row.nodo || '',
-        "No Cek/Giro": row.nocekgiro || '',
-        "Keterangan": row.keterangan || '',
-        "Debet": row.debet || 0,
-        "Kredit": row.kredit || 0,
-        "Saldo": row.saldo || 0,
-        "Kode Org": row.kodeorg || '',
-        "Kode Blok": row.kodeblok || '',
-        "Tahun Tanam": row.tahuntanam || ''
-      };
+  // Builds xlsx worksheet by writing cells directly — bypasses all helper functions
+  // that hit the "too many properties to enumerate" limit on large datasets
+  const buildWorksheetDirect = (dataRows) => {
+    const ws = {};
+    const R = dataRows.length + 1; // +1 for header
+    const C = EXPORT_HEADERS.length;
+
+    // Header row
+    EXPORT_HEADERS.forEach((h, c) => {
+      ws[XLSX.utils.encode_cell({ r: 0, c })] = { v: h, t: 's' };
     });
 
-    const ws = XLSX.utils.json_to_sheet(exportData);
+    // Data rows
+    dataRows.forEach((row, ri) => {
+      row.forEach((val, c) => {
+        const cell = { v: val };
+        cell.t = typeof val === 'number' ? 'n' : 's';
+        ws[XLSX.utils.encode_cell({ r: ri + 1, c })] = cell;
+      });
+    });
+
+    ws['!ref'] = XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: R - 1, c: C - 1 } });
+    return ws;
+  };
+
+  const processedToRows = (processed) => processed.map(row => {
+    if (row.type === 'summary') {
+      return ['', '', '', row.noakun, '', '', '', '', '', '', '', '', '',
+              row.keterangan, 0, 0, row.saldo, '', '', ''];
+    }
+    return [row.no || '', row.nojurnal || '', row.tanggal || '', row.noakun || '',
+            row.namaakun || '', row.noaruskas || '', row.namakaryawan || '',
+            row.kodecustomer || '', row.namasupplier || '', row.noreferensi || '',
+            row.nodok || '', row.nodo || '', row.nocekgiro || '',
+            row.keterangan || '', Number(row.debet) || 0, Number(row.kredit) || 0, row.saldo || 0,
+            row.kodeorg || '', row.kodeblok || '', row.tahuntanam || ''];
+  });
+
+  const handleExportExcel = () => {
+    if (!tableData.length) return;
     const wb = XLSX.utils.book_new();
+    const ws = buildWorksheetDirect(processedToRows(tableData));
     XLSX.utils.book_append_sheet(wb, ws, "General Ledger");
     XLSX.writeFile(wb, `General_Ledger_${filters.tgl1}_${filters.tgl2}.xlsx`);
+  };
+
+  // Direct export without viewing - streams Excel from server
+  const handleDirectExport = async () => {
+    setExporting(true);
+    setExportStatus('Preparing export...');
+
+    try {
+      const token = localStorage.getItem('token');
+      const params = new URLSearchParams(
+        Object.fromEntries(Object.entries(filters).filter(([, v]) => v !== ''))
+      );
+
+      const response = await fetch(
+        `${import.meta.env.VITE_API_BASE_URL}/api/ledger/export?${params}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+
+      if (!response.ok) {
+        throw new Error(`Server error: ${response.status}`);
+      }
+
+      setExportStatus('Downloading...');
+
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `General_Ledger_${filters.tgl1}_${filters.tgl2}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+
+      // Show popup with download info
+      setExportStatus('Export completed! File saved to Downloads folder.');
+      setTimeout(() => setExportStatus(''), 5000);
+    } catch (error) {
+      console.error('Export failed:', error);
+      setExportStatus('Export failed. Please try again.');
+      setTimeout(() => setExportStatus(''), 3000);
+    } finally {
+      setExporting(false);
+    }
   };
 
   const formatMoney = (val) => {
@@ -330,9 +370,9 @@ export default function GeneralLedger({ onNavigate }) {
             />
           </div>
           <div className="flex items-end">
-            <button 
+            <button
               onClick={handleFetchLedger}
-              disabled={loading}
+              disabled={loading || exporting}
               className="w-full bg-[#875A7B] text-white py-1.5 px-4 rounded-lg font-medium hover:bg-[#6d4863] transition-colors disabled:opacity-50 flex items-center justify-center gap-2 text-xs"
             >
               {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Search className="w-3.5 h-3.5" />}
@@ -341,9 +381,19 @@ export default function GeneralLedger({ onNavigate }) {
           </div>
           <div className="flex items-end">
              <button
-                onClick={handleExportExcel}
-                disabled={loading || tableData.length === 0}
+                onClick={handleDirectExport}
+                disabled={loading || exporting}
                 className="w-full bg-emerald-600 text-white py-1.5 px-4 rounded-lg font-medium hover:bg-emerald-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 text-xs"
+             >
+                {exporting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                Export Direct
+             </button>
+          </div>
+          <div className="flex items-end">
+             <button
+                onClick={handleExportExcel}
+                disabled={loading || exporting || tableData.length === 0}
+                className="w-full bg-blue-600 text-white py-1.5 px-4 rounded-lg font-medium hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2 text-xs"
              >
                 <Download className="w-3.5 h-3.5" />
                 Export
@@ -351,6 +401,25 @@ export default function GeneralLedger({ onNavigate }) {
           </div>
         </div>
       </div>
+
+      {/* Export status notification */}
+      {exportStatus && (
+        <div className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-medium flex-none
+          ${exportStatus.includes('failed') || exportStatus.includes('No data')
+            ? 'bg-red-50 text-red-700 border border-red-200'
+            : exportStatus.includes('successfully')
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              : 'bg-blue-50 text-blue-700 border border-blue-200'
+          }`}>
+          {exporting
+            ? <Loader2 className="w-3.5 h-3.5 animate-spin flex-none" />
+            : exportStatus.includes('failed') || exportStatus.includes('No data')
+              ? <AlertCircle className="w-3.5 h-3.5 flex-none" />
+              : <Download className="w-3.5 h-3.5 flex-none" />
+          }
+          {exportStatus}
+        </div>
+      )}
 
       {/* Results */}
       <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden flex-1 flex flex-col min-h-0">

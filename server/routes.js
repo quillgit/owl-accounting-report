@@ -21,6 +21,7 @@ router.get('/options/accounts', ledgerController.getOptionsAccounts);
 
 // Report routes
 router.get('/ledger/report', ledgerController.getLedgerReport);
+router.get('/ledger/export', ledgerController.exportLedger);
 router.get('/trial-balance/report', ledgerController.getTrialBalance);
 
 module.exports = router;
