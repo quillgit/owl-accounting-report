@@ -176,7 +176,7 @@ export default function GeneralLedger({ onNavigate }) {
     "No Arus Kas", "Nama Karyawan", "Kode Customer", "Nama Supplier",
     "No Referensi", "No Dok/Kontrak", "No DO", "No Cek/Giro",
     "Keterangan", "Debet", "Kredit", "Saldo", "Kode Org",
-    "Kode Blok", "Tahun Tanam"
+    "Kode Blok", "Tahun Tanam", "Departemen"
   ];
 
   // Builds xlsx worksheet by writing cells directly — bypasses all helper functions
@@ -207,14 +207,14 @@ export default function GeneralLedger({ onNavigate }) {
   const processedToRows = (processed) => processed.map(row => {
     if (row.type === 'summary') {
       return ['', '', '', row.noakun, '', '', '', '', '', '', '', '', '',
-              row.keterangan, 0, 0, row.saldo, '', '', ''];
+              row.keterangan, 0, 0, row.saldo, '', '', '', ''];
     }
     return [row.no || '', row.nojurnal || '', row.tanggal || '', row.noakun || '',
             row.namaakun || '', row.noaruskas || '', row.namakaryawan || '',
             row.kodecustomer || '', row.namasupplier || '', row.noreferensi || '',
             row.nodok || '', row.nodo || '', row.nocekgiro || '',
             row.keterangan || '', Number(row.debet) || 0, Number(row.kredit) || 0, row.saldo || 0,
-            row.kodeorg || '', row.kodeblok || '', row.tahuntanam || ''];
+            row.kodeorg || '', row.kodeblok || '', row.tahuntanam || '', row.namadept || ''];
   });
 
   const handleExportExcel = () => {
@@ -446,13 +446,14 @@ export default function GeneralLedger({ onNavigate }) {
                 <th className="px-2 py-1.5 text-right border-r border-gray-100 whitespace-nowrap">Saldo</th>
                 <th className="px-2 py-1.5 border-r border-gray-100 whitespace-nowrap">Kode Org</th>
                 <th className="px-2 py-1.5 border-r border-gray-100 whitespace-nowrap">Kode Blok</th>
-                <th className="px-2 py-1.5 whitespace-nowrap">Tahun Tanam</th>
+                <th className="px-2 py-1.5 border-r border-gray-100 whitespace-nowrap">Tahun Tanam</th>
+                <th className="px-2 py-1.5 whitespace-nowrap">Departemen</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {currentTableData.length === 0 ? (
                 <tr>
-                  <td colSpan="20" className="px-4 py-8 text-center text-gray-400">
+                  <td colSpan="21" className="px-4 py-8 text-center text-gray-400">
                     No data available. Adjust filters and search.
                   </td>
                 </tr>
@@ -478,6 +479,7 @@ export default function GeneralLedger({ onNavigate }) {
                         <td className="px-2 py-1.5 text-right border-r border-gray-100 font-mono text-emerald-600">0</td>
                         <td className="px-2 py-1.5 text-right border-r border-gray-100 font-mono text-rose-600">0</td>
                         <td className="px-2 py-1.5 text-right border-r border-gray-100 font-mono">{formatMoney(row.saldo)}</td>
+                        <td className="px-2 py-1.5 border-r border-gray-100"></td>
                         <td className="px-2 py-1.5 border-r border-gray-100"></td>
                         <td className="px-2 py-1.5 border-r border-gray-100"></td>
                         <td className="px-2 py-1.5"></td>
@@ -507,7 +509,8 @@ export default function GeneralLedger({ onNavigate }) {
                       <td className="px-2 py-1.5 text-right border-r border-gray-100 font-mono font-medium">{formatMoney(row.saldo)}</td>
                       <td className="px-2 py-1.5 border-r border-gray-100 text-[10px]">{row.kodeorg}</td>
                       <td className="px-2 py-1.5 border-r border-gray-100 text-[10px]">{row.kodeblok}</td>
-                      <td className="px-2 py-1.5 text-[10px]">{row.tahuntanam}</td>
+                      <td className="px-2 py-1.5 border-r border-gray-100 text-[10px]">{row.tahuntanam}</td>
+                      <td className="px-2 py-1.5 text-[10px]">{row.namadept}</td>
                     </tr>
                   );
                 })

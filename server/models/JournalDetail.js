@@ -27,6 +27,8 @@ const JournalDetail = sequelize.define('JournalDetail', {
     nodok: DataTypes.STRING(50),
     nik: DataTypes.STRING(10),
     kodeblok: DataTypes.STRING(45),
+    kode_dept: DataTypes.STRING(10),
+    tahuntanam: DataTypes.INTEGER,
     revisi: {
         type: DataTypes.INTEGER,
         defaultValue: 0

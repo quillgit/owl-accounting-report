@@ -145,6 +145,7 @@ exports.getLedgerReport = async (req, res) => {
                 { model: db.Account, attributes: ['namaakun'], required: false },
                 { model: db.Karyawan, attributes: ['namakaryawan'], required: false }
             ],
+            attributes: { exclude: [] }, // include all fields
             order: [
                 ['noakun', 'ASC'],
                 ['tanggal', 'ASC']
@@ -219,20 +220,30 @@ exports.getLedgerReport = async (req, res) => {
             mutasiMap[r.noakun] += Number(r.jumlah || 0);
         });
 
-        // 6. Format Response
+        // 6. Fetch department names
+        const deptCodes = [...new Set(rows.map(r => r.kode_dept).filter(Boolean))];
+        let deptNameMap = {};
+        if (deptCodes.length > 0) {
+            const [deptRows] = await mysqlPool.query(`
+                SELECT kode, nama FROM sdm_5departemen WHERE kode IN (?)
+            `, [deptCodes]);
+            deptRows.forEach(r => deptNameMap[r.kode] = r.nama || '');
+        }
+
+        // 7. Format Response
         const responseRows = [];
         const runningByAkun = {};
-        
+
         rows.forEach((r, idx) => {
             const amt = Number(r.jumlah || 0);
             const debet = amt >= 0 ? amt : 0;
             const kredit = amt < 0 ? Math.abs(amt) : 0;
-            
+
             if (runningByAkun[r.noakun] === undefined) {
                 runningByAkun[r.noakun] = saldoAwalMap[r.noakun] || 0;
             }
             runningByAkun[r.noakun] += amt;
-            
+
             responseRows.push({
                 nourut: idx + 1,
                 nojurnal: r.nojurnal,
@@ -253,7 +264,8 @@ exports.getLedgerReport = async (req, res) => {
                 saldo: runningByAkun[r.noakun],
                 kodeorg: r.kodeorg,
                 kodeblok: r.kodeblok,
-                tahuntanam: r.tahuntanam
+                tahuntanam: r.tahuntanam,
+                namadept: deptNameMap[r.kode_dept] || ''
             });
         });
 
@@ -653,7 +665,8 @@ exports.exportLedger = async (req, res) => {
             { header: 'Saldo', key: 'saldo', width: 15, style: { numFmt: '#,##0.00' } },
             { header: 'Kode Org', key: 'kodeorg', width: 12 },
             { header: 'Kode Blok', key: 'kodeblok', width: 12 },
-            { header: 'Tahun Tanam', key: 'tahuntanam', width: 12 }
+            { header: 'Tahun Tanam', key: 'tahuntanam', width: 12 },
+            { header: 'Departemen', key: 'namadept', width: 20 }
         ];
 
         // 6. Fetch rows in chunks and write to Excel
@@ -666,10 +679,11 @@ exports.exportLedger = async (req, res) => {
 
         while (hasMore) {
             const [rows] = await mysqlPool.query(`
-                SELECT jd.*, s.namasupplier, k.namakaryawan
+                SELECT jd.*, s.namasupplier, k.namakaryawan, d.nama as namadept
                 FROM keu_jurnaldt jd
                 LEFT JOIN log_5supplier s ON s.supplierid = jd.kodesupplier
                 LEFT JOIN datakaryawan k ON k.nik = jd.nik
+                LEFT JOIN sdm_5departemen d ON d.kode = jd.kode_dept
                 WHERE jd.tanggal BETWEEN ? AND ? ${orgFilter} ${accountFilter}
                 ORDER BY jd.noakun ASC, jd.tanggal ASC, jd.nojurnal ASC
                 LIMIT ? OFFSET ?
@@ -689,7 +703,7 @@ exports.exportLedger = async (req, res) => {
                         noaruskas: '', namakaryawan: '', kodecustomer: '', namasupplier: '',
                         noreferensi: '', nodok: '', nodo: '', nocekgiro: '',
                         keterangan: 'Saldo Akhir', debet: 0, kredit: 0, saldo: currentSaldo,
-                        kodeorg: '', kodeblok: '', tahuntanam: ''
+                        kodeorg: '', kodeblok: '', tahuntanam: '', namadept: ''
                     });
                     currentAkun = null;
                 }
@@ -705,7 +719,7 @@ exports.exportLedger = async (req, res) => {
                         noaruskas: '', namakaryawan: '', kodecustomer: '', namasupplier: '',
                         noreferensi: '', nodok: '', nodo: '', nocekgiro: '',
                         keterangan: 'Saldo Awal', debet: 0, kredit: 0, saldo: currentSaldo,
-                        kodeorg: '', kodeblok: '', tahuntanam: ''
+                        kodeorg: '', kodeblok: '', tahuntanam: '', namadept: ''
                     });
                 }
 
@@ -736,7 +750,8 @@ exports.exportLedger = async (req, res) => {
                     saldo: currentSaldo,
                     kodeorg: row.kodeorg,
                     kodeblok: row.kodeblok,
-                    tahuntanam: row.tahuntanam
+                    tahuntanam: row.tahuntanam,
+                    namadept: row.namadept || ''
                 });
             }
 
@@ -751,7 +766,7 @@ exports.exportLedger = async (req, res) => {
                 noaruskas: '', namakaryawan: '', kodecustomer: '', namasupplier: '',
                 noreferensi: '', nodok: '', nodo: '', nocekgiro: '',
                 keterangan: 'Saldo Akhir', debet: 0, kredit: 0, saldo: currentSaldo,
-                kodeorg: '', kodeblok: '', tahuntanam: ''
+                kodeorg: '', kodeblok: '', tahuntanam: '', namadept: ''
             });
         }
 
